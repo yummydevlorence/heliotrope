@@ -4,16 +4,23 @@ export default function Splash({ onDone }) {
   const canvasRef = useRef(null)
   const [leaving, setLeaving] = useState(false)
 
+  // keep the latest onDone in a ref so a parent re-render never restarts the exit timer
+  const doneRef = useRef(onDone)
   useEffect(() => {
-    const timer = setTimeout(() => setLeaving(true), 11000)
+    doneRef.current = onDone
+  }, [onDone])
+
+  useEffect(() => {
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const timer = setTimeout(() => setLeaving(true), reduce ? 2500 : 8500)
     return () => clearTimeout(timer)
   }, [])
 
   useEffect(() => {
     if (!leaving) return
-    const timer = setTimeout(onDone, 700)
+    const timer = setTimeout(() => doneRef.current?.(), 700)
     return () => clearTimeout(timer)
-  }, [leaving, onDone])
+  }, [leaving])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -21,7 +28,8 @@ export default function Splash({ onDone }) {
     if (!canvas || !context) return
 
     const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
-    const startTime = performance.now()
+    let clock = 0
+    let lastNow = 0
     let width = 0
     let height = 0
     let animationFrame = 0
@@ -95,7 +103,15 @@ export default function Splash({ onDone }) {
     }
 
     function drawFrame(now) {
-      const time = reduceMotion ? 12 : (now - startTime) / 1000
+      // advance the clock by a capped step so a hidden tab or a hitch never skips the intro
+      const step = lastNow ? Math.min((now - lastNow) / 1000, 0.05) : 0
+      lastNow = now
+      if (document.hidden) {
+        animationFrame = requestAnimationFrame(drawFrame)
+        return
+      }
+      clock += step
+      const time = reduceMotion ? 12 : clock
       const progress = easeInOut(clamp(time / 6, 0, 1))
       const daylight = clamp(progress * 1.25, 0, 1)
       const sunX = width * (0.16 + 0.68 * progress)
@@ -338,7 +354,7 @@ export default function Splash({ onDone }) {
       }}
       aria-label="Continue to Heliotrope"
     >
-      <canvas ref={canvasRef} />
+      <canvas ref={canvasRef} aria-hidden="true" />
       <div className="sp-tx">
         <h1 className="sp-t">Heliotrope</h1>
         <p className="sp-g">the wrong answer that led me to you</p>

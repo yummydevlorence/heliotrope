@@ -18,7 +18,7 @@ function buildColumn(offset) {
 }
 
 // soft = calmer and darker, used behind the in-app screens (Chat, Memories, Streak)
-export default function Background({ soft = false }) {
+export default function Background({ soft = false, paused = false }) {
   if (IMAGES.length === 0) {
     return <div className="fixed inset-0 -z-10 bg-[#0e0e10]" aria-hidden="true" />
   }
@@ -29,12 +29,15 @@ export default function Background({ soft = false }) {
     <div className="fixed inset-0 -z-10 bg-[#0e0e10] overflow-hidden" aria-hidden="true">
       <div className="absolute inset-0 flex gap-2 px-2">
         {columns.map((list, index) => (
-          <div key={index} className="flex-1 overflow-hidden">
+          <div key={index} className="flex-1 overflow-hidden" style={{ contain: 'layout paint' }}>
             <div
               className={`flex flex-col will-change-transform ${
                 index % 2 === 0 ? 'scroll-up' : 'scroll-down'
               }`}
-              style={{ animationDuration: `${(soft ? 70 : 45) + index * 12}s` }}
+              style={{
+                animationDuration: `${(soft ? 70 : 45) + index * 12}s`,
+                animationPlayState: paused ? 'paused' : 'running',
+              }}
             >
               {list.map((src, imageIndex) => (
                 <img
@@ -42,6 +45,8 @@ export default function Background({ soft = false }) {
                   src={src}
                   alt=""
                   className="w-full aspect-[3/4] object-cover rounded-2xl mb-2"
+                  loading="lazy"
+                  decoding="async"
                 />
               ))}
             </div>

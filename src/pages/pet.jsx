@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabase'
+import { play } from '../Sfx.js'
 import { ART_STYLES, Cat, RoomIcon, Scene, StatIcon } from './PetArt'
 
 const STYLES = `
@@ -235,6 +236,7 @@ export default function Pet({ mealsToday, today }) {
     const toys = toysRef.current
     const brain = brainRef.current
     const stage = stageRef.current
+    if (!stage) return
     const els = Object.fromEntries(
       [...stage.querySelectorAll('[data-toy]')].map((element) => [element.dataset.toy, element]),
     )
@@ -245,17 +247,17 @@ export default function Pet({ mealsToday, today }) {
       for (const key of KEYS) {
         const toy = toys[key]
         const r = TOY[key].r
-        els.current[`${key}G`]?.setAttribute('transform', toyTransform(key, toy))
-        els.current[`${key}Spin`]?.setAttribute('transform', `rotate(${toy.rot.toFixed(1)})`)
-        const shadow = els.current[`${key}Shadow`]
+        els[`${key}G`]?.setAttribute('transform', toyTransform(key, toy))
+        els[`${key}Spin`]?.setAttribute('transform', `rotate(${toy.rot.toFixed(1)})`)
+        const shadow = els[`${key}Shadow`]
         if (shadow) {
           shadow.setAttribute('cx', toy.x.toFixed(1))
           shadow.setAttribute('rx', (r * (1 - Math.min(toy.h, 200) / 260)).toFixed(1))
         }
       }
       const points = threadPoints(toys.yarn)
-      els.current.threadA?.setAttribute('points', points)
-      els.current.threadB?.setAttribute('points', points)
+      els.threadA?.setAttribute('points', points)
+      els.threadB?.setAttribute('points', points)
     }
 
     function physics(dt) {
@@ -426,6 +428,7 @@ export default function Pet({ mealsToday, today }) {
   }, [])
 
   const caught = useCallback(() => {
+    play('pop')
     setJig(true)
     setTimeout(() => setJig(false), 650)
     addHeart()
@@ -444,6 +447,7 @@ export default function Pet({ mealsToday, today }) {
   }, [addHeart, save])
 
   const batted = useCallback(() => {
+    play('bounce')
     setJig(true)
     setTimeout(() => setJig(false), 650)
   }, [])
@@ -456,7 +460,10 @@ export default function Pet({ mealsToday, today }) {
     if (now < data.nextPoop) return
     const wasFull = data.poops >= MAX_POOPS
     save((d) => ({ ...d, poops: Math.min(MAX_POOPS, d.poops + 1), nextPoop: Date.now() + randomGap() }))
-    if (!wasFull) say(`${name} needs the toilet 🚽`)
+    if (!wasFull) {
+      play('meow')
+      say(`${name} needs the toilet 🚽`)
+    }
   }, [name, save, say])
 
   useEffect(() => {
@@ -526,6 +533,7 @@ export default function Pet({ mealsToday, today }) {
     const time = currentTime()
     if (time - lastPet.current < 1200) return
     lastPet.current = time
+    play('purr')
     addHeart()
     save((d) => ({ ...d, joy: { v: clamp(d.joy.v + 8), t: d.joy.t } }))
   }
@@ -539,6 +547,7 @@ export default function Pet({ mealsToday, today }) {
       ate: { date: today, n: (d.ate.date === today ? d.ate.n : 0) + 1 },
     }))
     addHeart()
+    play('munch')
     setChew(true)
     setTimeout(() => setChew(false), 1400)
     say('Yum! 😋')
@@ -549,10 +558,12 @@ export default function Pet({ mealsToday, today }) {
     if (petRef.current.asleep) {
       if (energy < WAKE_MIN) return say(`${name} is too tired to wake up. Let him sleep 😴`)
       save((d) => ({ ...d, asleep: false, nextPoop: Date.now() + randomGap() }))
+      play('wake')
       say(`${name} woke up 🥱`)
     } else {
       if (energy > SLEEP_MAX) return say(`${name} is not sleepy yet`)
       save((d) => ({ ...d, asleep: true }))
+      play('sleep')
     }
   }
 
@@ -583,6 +594,7 @@ export default function Pet({ mealsToday, today }) {
     clearTimeout(pottyTimer.current)
     pottyTimer.current = setTimeout(() => {
       setPotty('done')
+      play('success')
       say('All done! Press flush 🚽')
     }, 2800)
   }
@@ -590,6 +602,7 @@ export default function Pet({ mealsToday, today }) {
   function flush() {
     if (potty !== 'done') return say(potty ? 'Not yet…' : 'Nothing to flush')
     setPotty('flush')
+    play('flush')
     setTimeout(() => {
       setPotty(null)
       save((d) => ({ ...d, poops: 0, joy: { v: clamp(d.joy.v + 4), t: d.joy.t } }))
@@ -610,13 +623,16 @@ export default function Pet({ mealsToday, today }) {
       say(`${name} stepped out`)
       return
     }
+    play('water')
     setShower('on')
     say(`${name} is in the shower. Rub him to scrub 🧼`)
   }
 
   function addSuds(amount) {
     if (rinsing.current) return
+    const before = Math.floor(sudsRef.current / 15)
     sudsRef.current = Math.min(100, sudsRef.current + amount)
+    if (Math.floor(sudsRef.current / 15) !== before) play('bubble')
     const value = Math.round(sudsRef.current)
     if (value !== suds) setSuds(value)
     if (sudsRef.current >= 100) rinse()
@@ -625,6 +641,7 @@ export default function Pet({ mealsToday, today }) {
   function rinse() {
     rinsing.current = true
     setShower('rinse')
+    play('water')
     say('Rinsing off… 🫧')
     setTimeout(() => {
       sudsRef.current = 0
@@ -635,6 +652,7 @@ export default function Pet({ mealsToday, today }) {
       setJig(true)
       setTimeout(() => setJig(false), 650)
       say('Squeaky clean ✨')
+      play('success')
     }, 2000)
   }
 

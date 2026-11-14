@@ -1,8 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabase'
+import { play } from '../Sfx.js'
 import { compressImage } from '../lib/image'
-import { checkFace } from './face'
+import { checkFace, enrollFace, hasFaceProfile } from './face'
 import Pet from './pet'
+import { Camera, Crown, Flame, Flower2, Hourglass, Sparkles, X } from 'lucide-react'
+
+// Streak levels: the flame upgrades as the streak grows
+const LEVELS = [
+  { min: 0, name: 'Spark', Icon: Flame, color: '#c9a27a', size: 48 },
+  { min: 3, name: 'Ember', Icon: Flame, color: '#f0b83a', size: 52 },
+  { min: 10, name: 'Blaze', Icon: Flame, color: '#f58a3c', size: 58 },
+  { min: 30, name: 'Inferno', Icon: Flame, color: '#ff5b4a', size: 64 },
+  { min: 60, name: 'Radiant', Icon: Sparkles, color: '#ffd76a', size: 62 },
+  { min: 100, name: 'Royal', Icon: Crown, color: '#ffc542', size: 62 },
+  { min: 365, name: 'Heliotrope', Icon: Flower2, color: '#ffb52e', size: 66 },
+]
+
+function levelFor(days) {
+  let index = 0
+  LEVELS.forEach((level, i) => {
+    if (days >= level.min) index = i
+  })
+  const level = LEVELS[index]
+  const next = LEVELS[index + 1] || null
+  const progress = next ? (days - level.min) / (next.min - level.min) : 1
+  return { index, level, next, progress }
+}
 
 const STYLES = `
 @keyframes st-pop { from { transform: scale(.5); opacity: 0; } to { transform: none; opacity: 1; } }
@@ -24,7 +48,12 @@ const STYLES = `
 .st-thumb { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; border: 2px solid #232327; background: #0e0e10; display: inline-block; }
 .st-modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .st-sheet { width: 100%; max-width: 420px; max-height: 90dvh; overflow-y: auto; background: #232327; border-radius: 24px; padding: 18px; animation: st-pop .35s var(--spring) both; }
-@media (prefers-reduced-motion: reduce) { .st-fire, .st-num, .st-wait, .st-sheet { animation: none !important; } }
+@keyframes st-levelup { 0% { transform: scale(.4) rotate(-20deg); opacity: 0; } 60% { transform: scale(1.25) rotate(6deg); opacity: 1; } 100% { transform: none; } }
+.st-lvl { display: inline-block; animation: st-levelup .8s var(--spring) both; }
+.st-badge { display: inline-block; margin-top: 6px; padding: 3px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: .04em; border: .5px solid currentColor; background: rgba(255,255,255,.06); }
+.st-track { height: 6px; border-radius: 6px; background: #0e0e10; overflow: hidden; box-shadow: inset 1px 1px 3px rgba(0,0,0,.6); }
+.st-track > span { display: block; height: 100%; border-radius: 6px; transition: width .6s ease; }
+@media (prefers-reduced-motion: reduce) { .st-fire, .st-num, .st-wait, .st-sheet, .st-lvl { animation: none !important; } }
 `
 
 const manilaToday = () =>
@@ -78,11 +107,11 @@ function calcStreaks(done, today) {
   return { current, best }
 }
 
-function Slot({ title, post, url, empty, extra, onOpen }) {
+function Slot({ title, post, url, empty, extra, onOpen, onImageError }) {
   return (
     <div className="text-center">
       <div className="st-pic" onClick={post ? onOpen : undefined} style={post ? { cursor: 'pointer' } : undefined}>
-        {post && url && <img src={url} alt={`${title}'s selfie`} />}
+        {post && url && <img src={url} alt={`${title}'s selfie`} onError={() => onImageError(post.image_path)} />}
         {post && !url && <span className="st-wait text-sm text-[#63636e]">Loading…</span>}
         {!post && empty}
         {post && (
@@ -94,6 +123,117 @@ function Slot({ title, post, url, empty, extra, onOpen }) {
       <p className="text-sm font-semibold mt-2">{title}</p>
       {extra}
     </div>
+  )
+}
+
+const FACE_STEPS = ['Face the camera', 'Turn slightly left', 'Turn slightly right']
+
+function FaceEnroll({ userId, canCancel, onDone, onCancel }) {
+  const [shots, setShots] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const fileRef = useRef(null)
+  const shotsRef = useRef([])
+  const busyRef = useRef(false)
+
+  useEffect(() => {
+    shotsRef.current = shots
+  }, [shots])
+  useEffect(() => () => shotsRef.current.forEach((shot) => URL.revokeObjectURL(shot.url)), [])
+
+  async function addShot(event) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!file.type.startsWith('image/')) return setError('Photos only.')
+    setError('')
+    try {
+      const blob = await compressImage(file)
+      setShots((list) => {
+        if (list.length >= 3) return list
+        const next = [...list, { blob, url: URL.createObjectURL(blob) }]
+        shotsRef.current = next
+        return next
+      })
+    } catch (readError) {
+      console.error('Unable to read face photo:', readError)
+      setError('Could not read that photo. Try another one.')
+    }
+  }
+
+  function reset() {
+    shots.forEach((shot) => URL.revokeObjectURL(shot.url))
+    shotsRef.current = []
+    setShots([])
+    setError('')
+  }
+
+  async function save() {
+    if (busyRef.current || shots.length !== 3) return
+    busyRef.current = true
+    setBusy(true)
+    setError('')
+    try {
+      const result = await enrollFace(shots.map((shot) => shot.blob), userId)
+      if (!result.ok) {
+        setError(result.message)
+        return
+      }
+      onDone()
+    } catch (saveError) {
+      console.error('Unable to enroll face:', saveError)
+      setError('Could not save your face. Try again.')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="glass rounded-3xl p-4 text-center space-y-3">
+      <input ref={fileRef} type="file" accept="image/*" capture="user" hidden onChange={addShot} />
+      <h3 className="font-semibold">Set up your face photo</h3>
+      <p className="text-xs text-[#9a9aa6]">
+        Take 3 clear photos of just you, in good light. Your selfies will be checked against these.
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+        {FACE_STEPS.map((label, index) => (
+          <div key={label}>
+            <div className="st-pic" style={{ aspectRatio: '3 / 4' }}>
+              {shots[index] ? (
+                <img src={shots[index].url} alt={label} />
+              ) : (
+                <span className="text-[11px] text-[#63636e] px-1">{index + 1}</span>
+              )}
+            </div>
+            <p className="text-[11px] text-[#9a9aa6] mt-1">{label}</p>
+          </div>
+        ))}
+      </div>
+      {error && <p className="text-sm text-red-300">{error}</p>}
+      <div className="flex gap-2">
+        {canCancel && (
+          <button type="button" className="glass-btn flex-1" disabled={busy} onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+        {shots.length > 0 && (
+          <button type="button" className="glass-btn flex-1" disabled={busy} onClick={reset}>
+            Start over
+          </button>
+        )}
+        {shots.length < 3 ? (
+          <button type="button" className="glass-btn flex-1 !bg-[var(--ac)] !text-[#0e0e10]" disabled={busy} onClick={() => fileRef.current?.click()}>
+            <Camera size={16} className="inline mr-1.5 -mt-0.5" />
+            Photo {shots.length + 1} of 3
+          </button>
+        ) : (
+          <button type="button" className="glass-btn flex-1 !bg-[var(--ac)] !text-[#0e0e10]" disabled={busy} onClick={save}>
+            {busy ? 'Checking your face…' : 'Save my face'}
+          </button>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -110,51 +250,103 @@ export default function Streak({ session }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [enrolled, setEnrolled] = useState(null)
+  const [redo, setRedo] = useState(false)
   const fileRef = useRef(null)
   const urlRef = useRef({})
+  const busyRef = useRef(false)
+  const mountedRef = useRef(false)
+  const refreshingUrls = useRef(new Set())
+  const retriedUrls = useRef(new Map())
+
+  useEffect(() => {
+    let active = true
+    hasFaceProfile(me).then((result) => {
+      if (active) setEnrolled(result === null ? true : result)
+    })
+    return () => {
+      active = false
+    }
+  }, [me])
+
+  async function refreshUrl(path) {
+    const lastRetry = retriedUrls.current.get(path) || 0
+    if (refreshingUrls.current.has(path) || Date.now() - lastRetry < 50 * 60 * 1000) return
+    retriedUrls.current.set(path, Date.now())
+    refreshingUrls.current.add(path)
+    try {
+      const { data, error: signError } = await supabase.storage.from('photos').createSignedUrl(path, 3600)
+      if (signError) throw signError
+      if (!data?.signedUrl) throw new Error('No signed URL returned.')
+      urlRef.current[path] = data.signedUrl
+      if (mountedRef.current) setUrls({ ...urlRef.current })
+    } catch (signError) {
+      console.error('Unable to refresh selfie URL:', signError)
+      if (mountedRef.current) setError('Could not reload a selfie image. Try refreshing the page.')
+    } finally {
+      refreshingUrls.current.delete(path)
+    }
+  }
 
   const load = useCallback(async () => {
-    const { data, error: loadError } = await supabase
-      .from('streak_posts')
-      .select('*')
-      .order('post_date', { ascending: false })
-    if (loadError) {
-      console.error('Unable to load streak posts:', loadError)
-      setError('Could not load selfies. Check the streak_posts table and policies.')
-      setLoading(false)
-      return
+    try {
+      const { data, error: loadError } = await supabase
+        .from('streak_posts')
+        .select('*')
+        .order('post_date', { ascending: false })
+      if (loadError) throw loadError
+      if (!mountedRef.current) return
+      setPosts(data || [])
+      const missing = (data || []).map((post) => post.image_path).filter((path) => !urlRef.current[path])
+      if (missing.length) {
+        const { data: signed, error: signError } = await supabase.storage
+          .from('photos')
+          .createSignedUrls(missing, 3600)
+        if (signError) throw signError
+        if (!mountedRef.current) return
+        signed?.forEach((entry) => {
+          if (entry.signedUrl) urlRef.current[entry.path] = entry.signedUrl
+        })
+        setUrls({ ...urlRef.current })
+      }
+      setError('')
+    } catch (loadError) {
+      console.error('Unable to load streak posts or selfie URLs:', loadError)
+      if (mountedRef.current) setError('Could not load selfies. Check the streak_posts table and policies.')
+    } finally {
+      if (mountedRef.current) setLoading(false)
     }
-    setPosts(data)
-    const missing = data.map((post) => post.image_path).filter((path) => !urlRef.current[path])
-    if (missing.length) {
-      const { data: signed, error: signError } = await supabase.storage
-        .from('photos')
-        .createSignedUrls(missing, 3600)
-      if (signError) console.error('Unable to sign selfie URLs:', signError)
-      signed?.forEach((entry) => {
-        if (entry.signedUrl) urlRef.current[entry.path] = entry.signedUrl
-      })
-      setUrls({ ...urlRef.current })
-    }
-    setLoading(false)
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
+    let active = true
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load()
     supabase
       .from('profiles')
       .select('id,name')
-      .then(({ data }) => {
-        if (data) setNames(Object.fromEntries(data.map((profile) => [profile.id, profile.name])))
+      .then(({ data, error: profilesError }) => {
+        if (profilesError) throw profilesError
+        if (active && data) setNames(Object.fromEntries(data.map((profile) => [profile.id, profile.name])))
+      })
+      .catch((profilesError) => {
+        console.error('Unable to load profile names:', profilesError)
+        if (active) setError('Could not load profile names.')
       })
     const channel = supabase
       .channel('streak-room')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'streak_posts' }, () => load())
-      .subscribe()
-    return () => {
-      supabase.removeChannel(channel)
-    }
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'streak_posts' }, () => {
+          if (active) load()
+        })
+        .subscribe()
+      return () => {
+        active = false
+        mountedRef.current = false
+        supabase.removeChannel(channel).catch((channelError) => {
+          console.error('Unable to remove streak realtime channel:', channelError)
+        })
+      }
   }, [load])
 
   useEffect(() => {
@@ -175,6 +367,15 @@ export default function Streak({ session }) {
     [byDay],
   )
   const { current, best } = calcStreaks(done, today)
+  // level is based on your best streak, so it never drops if the streak resets
+  const { index: levelIndex, level, next, progress } = levelFor(best)
+  const prevLevel = useRef(null)
+  useEffect(() => {
+    if (loading) return
+    if (prevLevel.current !== null && levelIndex > prevLevel.current) play('levelup')
+    prevLevel.current = levelIndex
+  }, [levelIndex, loading])
+  const LevelIcon = level.Icon
   const days = Object.keys(byDay).sort().reverse()
   const dayPosts = (day) =>
     Object.values(byDay[day] || {}).sort(
@@ -184,8 +385,8 @@ export default function Streak({ session }) {
   const partnerId =
     Object.keys(names).find((id) => id !== me) ||
     posts.find((post) => post.user_id !== me)?.user_id
-  const partnerName = (partnerId && names[partnerId]) || 'Siya'
-  const myName = names[me] || 'Ako'
+  const partnerName = (partnerId && names[partnerId]) || 'Partner'
+  const myName = names[me] || 'You'
 
   const todayPosts = byDay[today] || {}
   const mine = todayPosts[me]
@@ -193,29 +394,34 @@ export default function Streak({ session }) {
   const complete = Boolean(mine && theirs)
 
   let status = 'No selfies yet today'
-  if (complete) status = 'Complete today ✨'
+  if (complete) status = 'Complete today'
   else if (mine) status = `Waiting for ${partnerName}…`
-  else if (theirs) status = `${partnerName} posted! Your turn 💕`
+  else if (theirs) status = `${partnerName} posted! Your turn`
+
+  function startSelfie() {
+    if (enrolled === false) return setError('Add your face photo first (see above).')
+    fileRef.current?.click()
+  }
 
   async function sendSelfie(event) {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (!file) return
+    if (!file || busyRef.current) return
     if (!file.type.startsWith('image/')) return setError('Photos only.')
+    busyRef.current = true
     setBusy(true)
     setError('')
     setNotice('')
-    let path
     try {
       const blob = await compressImage(file)
       const face = await checkFace(blob, me)
       if (!face.ok) {
+        play('error')
+        if (face.needsEnroll) setEnrolled(false)
         setError(face.message)
-        setBusy(false)
         return
       }
-      if (face.enrolled) setNotice('Your face is saved. Future selfies must match it.')
-      path = `streak/${me}/${today}-${Date.now()}.jpg`
+      const path = `streak/${me}/${today}-${Date.now()}.jpg`
       const { error: uploadError } = await supabase.storage
         .from('photos')
         .upload(path, blob, { contentType: 'image/jpeg' })
@@ -223,21 +429,27 @@ export default function Streak({ session }) {
       if (mine) {
         const { error: deleteError } = await supabase.from('streak_posts').delete().eq('id', mine.id)
         if (deleteError) throw deleteError
-        await supabase.storage.from('photos').remove([mine.image_path])
+        const { error: removeError } = await supabase.storage.from('photos').remove([mine.image_path])
+        if (removeError) console.error('Unable to remove previous selfie:', removeError)
       }
       const { error: insertError } = await supabase
         .from('streak_posts')
         .insert({ user_id: me, image_path: path })
       if (insertError) {
-        await supabase.storage.from('photos').remove([path])
+        const { error: removeError } = await supabase.storage.from('photos').remove([path])
+        if (removeError) console.error('Unable to remove unsaved selfie:', removeError)
         throw insertError
       }
       await load()
+      play('success')
     } catch (sendError) {
       console.error('Unable to send selfie:', sendError)
+      play('error')
       setError(`Could not send your selfie: ${sendError?.message || sendError}`)
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
-    setBusy(false)
   }
 
   const [year, monthNumber] = month.split('-').map(Number)
@@ -261,9 +473,29 @@ export default function Streak({ session }) {
       <input ref={fileRef} type="file" accept="image/*" capture="user" hidden onChange={sendSelfie} />
 
       <div className="text-center pt-2">
-        <div className="st-fire">🔥</div>
+        <div
+          className="st-fire"
+          style={{ color: level.color, filter: `drop-shadow(0 0 ${6 + level.size / 6}px ${level.color}88)` }}
+        >
+          <span key={level.name} className="st-lvl inline-block">
+            <LevelIcon size={level.size} strokeWidth={1.6} />
+          </span>
+        </div>
         <div key={current} className="st-num text-5xl font-bold">{current}</div>
         <p className="text-sm text-[#9a9aa6]">day streak · best {best}</p>
+        <span className="st-badge" style={{ color: level.color }}>{level.name}</span>
+        {next ? (
+          <div className="max-w-[240px] mx-auto mt-3">
+            <div className="st-track">
+              <span style={{ width: `${Math.round(progress * 100)}%`, background: level.color }} />
+            </div>
+            <p className="text-[11px] text-[#63636e] mt-1.5">
+              {next.min - best} more best-streak {next.min - best === 1 ? 'day' : 'days'} to {next.name}
+            </p>
+          </div>
+        ) : (
+          <p className="text-[11px] text-[#63636e] mt-3">Max level reached 🌻</p>
+        )}
         <p className="text-sm mt-2">{status}</p>
         {!complete && (
           <p className="text-xs text-[#63636e] mt-1">
@@ -274,6 +506,21 @@ export default function Streak({ session }) {
 
       {error && <p className="text-sm text-center text-red-300">{error}</p>}
       {notice && <p className="text-sm text-center text-green-300">{notice}</p>}
+      {enrolled === false && (
+        <FaceEnroll
+          userId={me}
+          canCancel={redo}
+          onCancel={() => {
+            setRedo(false)
+            setEnrolled(true)
+          }}
+          onDone={() => {
+            setRedo(false)
+            setEnrolled(true)
+            setNotice('Face photo saved. Your selfies will be checked against it.')
+          }}
+        />
+      )}
 
       <Pet mealsToday={Object.keys(todayPosts).length} today={today} />
 
@@ -288,9 +535,16 @@ export default function Streak({ session }) {
               type="button"
               className="glass-btn !px-4 !py-3 text-sm"
               disabled={busy}
-              onClick={() => fileRef.current?.click()}
+              onClick={startSelfie}
             >
-              {busy ? 'Checking…' : '📷 Feed with a selfie'}
+              {busy ? (
+                'Checking…'
+              ) : (
+                <>
+                  <Camera size={16} className="inline mr-1.5 -mt-0.5" />
+                  Feed with a selfie
+                </>
+              )}
             </button>
           }
           extra={
@@ -300,21 +554,38 @@ export default function Streak({ session }) {
                 type="button"
                 className="text-xs text-[#9a9aa6] underline mt-1"
                 disabled={busy}
-                onClick={() => fileRef.current?.click()}
+                onClick={startSelfie}
               >
                 {busy ? 'Sending…' : 'Retake'}
               </button>
             )
           }
+          onImageError={refreshUrl}
         />
         <Slot
           title={partnerName}
           post={theirs}
           url={theirs && urls[theirs.image_path]}
           onOpen={() => setOpenDay(today)}
-          empty={<span className="st-wait text-sm text-[#9a9aa6]">⏳ Waiting for {partnerName}…</span>}
+          empty={<span className="st-wait text-sm text-[#9a9aa6]">
+              <Hourglass size={14} className="inline mr-1 -mt-0.5" />
+              Waiting for {partnerName}…
+            </span>}
+          onImageError={refreshUrl}
         />
       </div>
+      {enrolled === true && (
+        <button
+          type="button"
+          className="block mx-auto text-xs text-[#9a9aa6] underline"
+          onClick={() => {
+            setRedo(true)
+            setEnrolled(false)
+          }}
+        >
+          Re-do my face photo
+        </button>
+      )}
 
       <section className="glass rounded-3xl p-4">
         <div className="flex items-center justify-between mb-3">
@@ -354,7 +625,7 @@ export default function Streak({ session }) {
         <h3 className="font-semibold mb-2">Our selfies</h3>
         {loading && <p className="text-center text-sm text-[#63636e]">Loading…</p>}
         {!loading && days.length === 0 && (
-          <p className="text-center text-sm text-[#63636e]">No selfies yet. Be the first today 📷</p>
+          <p className="text-center text-sm text-[#63636e]">No selfies yet. Be the first today</p>
         )}
         <div className="space-y-2">
           {days.map((day) => (
@@ -362,13 +633,19 @@ export default function Streak({ session }) {
               <span>
                 <span className="block text-sm font-semibold">{pretty(day, true)}</span>
                 <span className="block text-xs text-[#9a9aa6]">
-                  {done.has(day) ? '🔥 Both selfies' : 'One selfie only'}
+                  {done.has(day) ? (
+                    <>
+                      <Flame size={12} className="inline -mt-0.5" /> Both selfies
+                    </>
+                  ) : (
+                    'One selfie only'
+                  )}
                 </span>
               </span>
               <span className="flex -space-x-3">
                 {dayPosts(day).map((post) =>
                   urls[post.image_path] ? (
-                    <img key={post.id} src={urls[post.image_path]} alt="" className="st-thumb" />
+                    <img key={post.id} src={urls[post.image_path]} alt="" className="st-thumb" onError={() => refreshUrl(post.image_path)} />
                   ) : (
                     <span key={post.id} className="st-thumb" />
                   ),
@@ -385,14 +662,14 @@ export default function Streak({ session }) {
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold">{pretty(openDay, true)}</h3>
               <button type="button" className="text-xl px-2" onClick={() => setOpenDay(null)} aria-label="Close">
-                ✕
+                <X size={20} />
               </button>
             </div>
             <div className="grid grid-cols-2 gap-3">
               {dayPosts(openDay).map((post) => (
                 <figure key={post.id} className="text-center">
                   <div className="st-pic">
-                    {urls[post.image_path] && <img src={urls[post.image_path]} alt="Selfie" />}
+                    {urls[post.image_path] && <img src={urls[post.image_path]} alt="Selfie" onError={() => refreshUrl(post.image_path)} />}
                   </div>
                   <figcaption className="text-xs text-[#9a9aa6] mt-2">
                     {post.user_id === me ? myName : partnerName} · {timeOf(post.created_at)}

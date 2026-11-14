@@ -22,7 +22,7 @@ export function Avatar({ src, name, size = 36, tone = 'gold' }) {
       {src && !failed ? (
         <img src={src} alt="" onError={() => setFailed(true)} />
       ) : (
-        (name?.[0] || '🌻').toUpperCase()
+        (name?.[0] || 'H').toUpperCase()
       )}
     </span>
   )
@@ -49,14 +49,27 @@ export default function Header({ session }) {
   const [message, setMessage] = useState('')
   const fileRef = useRef(null)
   const menuRef = useRef(null)
+  const busyRef = useRef(false)
+  const [editing, setEditing] = useState(false)
+  const [nick, setNick] = useState('')
 
   useEffect(() => {
     let active = true
     supabase
       .from('profiles')
       .select('id,name,avatar_url')
-      .then(({ data }) => {
-        if (active && data) setProfiles(data)
+      .then(({ data, error }) => {
+        if (error) throw error
+        if (active && data) {
+          setProfiles((list) => {
+            const byId = new Map(list.map((profile) => [profile.id, profile]))
+            data.forEach((profile) => byId.set(profile.id, profile))
+            return [...byId.values()]
+          })
+        }
+      })
+      .catch((error) => {
+        console.error('Unable to load profiles:', error)
       })
     const channel = supabase
       .channel('profiles-changes')
@@ -68,7 +81,9 @@ export default function Header({ session }) {
       .subscribe()
     return () => {
       active = false
-      supabase.removeChannel(channel)
+      supabase.removeChannel(channel).catch((channelError) => {
+        console.error('Unable to remove profile realtime channel:', channelError)
+      })
     }
   }, [])
 
@@ -89,10 +104,35 @@ export default function Header({ session }) {
   const partnerName =
     partner?.name || KNOWN.find((user) => user.email && !sameEmail(user.email, me.email))?.name || 'Heliotrope'
 
+  async function saveNick(event) {
+    event.preventDefault()
+    const name = nick.trim().slice(0, 20)
+    if (!name || busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setMessage('')
+    try {
+      const { error: saveError } = await supabase.from('profiles').upsert({ id: me.id, name })
+      if (saveError) throw saveError
+      setProfiles((list) => [
+        ...list.filter((item) => item.id !== me.id),
+        { id: me.id, name, avatar_url: mine?.avatar_url ?? null },
+      ])
+      setEditing(false)
+      setMenu(false)
+    } catch (nickError) {
+      console.error('Nickname error:', nickError)
+      setMessage('Could not save the nickname. Try again.')
+    }
+    busyRef.current = false
+    setBusy(false)
+  }
+
   async function handleFile(event) {
     const file = event.target.files?.[0]
     event.target.value = ''
-    if (!file) return
+    if (!file || busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setMessage('')
     try {
@@ -117,6 +157,7 @@ export default function Header({ session }) {
       console.error('Profile photo error:', uploadFailure)
       setMessage('Could not upload that photo. Try another one.')
     }
+    busyRef.current = false
     setBusy(false)
   }
 
@@ -127,7 +168,7 @@ export default function Header({ session }) {
           <Avatar src={partner?.avatar_url} name={partnerName} size={38} />
           <div className="hd-text">
             <span className="hd-name">{partnerName}</span>
-            <span className="hd-sub">🌻 Heliotrope</span>
+            <span className="hd-sub">Heliotrope</span>
           </div>
         </div>
 
@@ -143,10 +184,37 @@ export default function Header({ session }) {
           </button>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleFile} />
           {menu && (
-            <div className="hd-menu">
+            <div className="hd-menu" style={{ minWidth: 220 }}>
               <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}>
-                {busy ? 'Uploading...' : 'Change my photo'}
+                {busy ? 'Please wait...' : 'Change my photo'}
               </button>
+              {editing ? (
+                <form onSubmit={saveNick} style={{ display: 'flex', gap: 6, padding: '4px 6px' }}>
+                  <input
+                    className="glass-input"
+                    style={{ padding: '.5rem .75rem', fontSize: 14 }}
+                    value={nick}
+                    maxLength={20}
+                    autoFocus
+                    placeholder="Nickname"
+                    onChange={(event) => setNick(event.target.value)}
+                  />
+                  <button type="submit" disabled={busy || !nick.trim()} style={{ width: 'auto', color: 'var(--ac)' }}>
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNick(myName)
+                    setMessage('')
+                    setEditing(true)
+                  }}
+                >
+                  Change my nickname
+                </button>
+              )}
               <button type="button" onClick={() => supabase.auth.signOut()}>
                 Logout
               </button>

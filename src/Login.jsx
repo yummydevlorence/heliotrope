@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
+import { CloudSun, Moon, Sun } from 'lucide-react'
 
 const USERS = [
   { name: import.meta.env.VITE_USER1_NAME, email: import.meta.env.VITE_USER1_EMAIL },
@@ -10,9 +11,9 @@ function greeting() {
   const hour = Number(
     new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila', hour: 'numeric', hour12: false }),
   )
-  if (hour < 12) return { text: 'Good morning, love', icon: '☀️' }
-  if (hour < 18) return { text: 'Good afternoon, love', icon: '🌤️' }
-  return { text: 'Good evening, love', icon: '🌙' }
+  if (hour < 12) return { text: 'Good morning, love', Icon: Sun }
+  if (hour < 18) return { text: 'Good afternoon, love', Icon: CloudSun }
+  return { text: 'Good evening, love', Icon: Moon }
 }
 
 const rand = (min, max) => Math.random() * (max - min) + min
@@ -105,6 +106,10 @@ export default function Login() {
     let frame = 0
 
     function draw(now) {
+      if (document.hidden) {
+        frame = requestAnimationFrame(draw)
+        return
+      }
       const pixelRatio = Math.min(devicePixelRatio || 1, 2)
       const width = canvas.clientWidth
       const height = canvas.clientHeight
@@ -275,7 +280,7 @@ export default function Login() {
           <div className="auth-ct space-y-4">
             <div className="text-center">
               <Sunflower svgRef={sunRef} faceRef={faceRef} />
-              <h1 className="auth-title" aria-label={`${hello.text} ${hello.icon}`}>
+              <h1 className="auth-title" aria-label={hello.text}>
                 {[...hello.text].map((letter, index) => (
                   <span key={index} aria-hidden="true" style={{ animationDelay: `${1 + index * 0.04}s` }}>
                     {letter}
@@ -283,7 +288,7 @@ export default function Login() {
                 ))}
                 <span aria-hidden="true" style={{ animationDelay: `${1 + hello.text.length * 0.04}s` }}>
                   {' '}
-                  {hello.icon}
+                  <hello.Icon size={24} className="inline -mt-1" />
                 </span>
               </h1>
               <span className="auth-underline" />
